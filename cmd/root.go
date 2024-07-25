@@ -1,3 +1,4 @@
+// cmd/root.go
 package cmd
 
 import (
@@ -13,6 +14,7 @@ var preambleFile string
 var outputFile string
 var estimateTokens bool
 var ignoreFilePath string
+var selectFilePath string
 var ignoreGitignore bool
 var outputJSON bool
 var debug bool
@@ -25,7 +27,8 @@ var rootCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		repoPath = args[0]
 		ignoreList := prompt.GenerateIgnoreList(repoPath, ignoreFilePath, !ignoreGitignore)
-		repo, err := prompt.ProcessGitRepo(repoPath, ignoreList)
+		selectList := prompt.GenerateSelectList(repoPath, selectFilePath)
+		repo, err := prompt.ProcessGitRepo(repoPath, ignoreList, selectList)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
 			os.Exit(1)
@@ -83,20 +86,14 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.Flags().StringVarP(&preambleFile, "preamble", "p", "", "path to preamble text file")
-	// output to file flag. Should be a string
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "path to output file")
-	// estimate tokens. Should be a bool
 	rootCmd.Flags().BoolVarP(&estimateTokens, "estimate", "e", false, "estimate the number of tokens in the output")
-	// ignore file path. Should be a string
 	rootCmd.Flags().StringVarP(&ignoreFilePath, "ignore", "i", "", "path to .gptignore file")
-	// ignore gitignore. Should be a bool
+	rootCmd.Flags().StringVarP(&selectFilePath, "select", "s", "", "path to .gptselect file")
 	rootCmd.Flags().BoolVarP(&ignoreGitignore, "ignore-gitignore", "g", false, "ignore .gitignore file")
-	// output JSON. Should be a bool
 	rootCmd.Flags().BoolVarP(&outputJSON, "json", "j", false, "output JSON")
-	// debug. Should be a bool
 	rootCmd.Flags().BoolVarP(&debug, "debug", "d", false, "debug mode. Do not output to standard output")
-	// scrub comments. Should be a bool
-	rootCmd.Flags().BoolVarP(&scrubComments, "scrub-comments", "s", false, "scrub comments from the output. Decreases token count")
+	rootCmd.Flags().BoolVarP(&scrubComments, "scrub-comments", "c", false, "scrub comments from the output. Decreases token count")
 }
 
 func Execute() {

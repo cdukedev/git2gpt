@@ -1,0 +1,605 @@
+The following text is a Git repository with code. The structure of the text are sections that begin with ----, followed by a single line containing the file path and file name, followed by a variable amount of lines containing the file contents. The text representing the Git repository ends when the symbols --END-- are encounted. Any further text beyond --END-- are meant to be interpreted as instructions using the aforementioned Git repository as context.
+----
+LICENSE
+The MIT License (MIT)
+
+Copyright © 2024 Chandler Lofland <chandler@chand1012.dev>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the “Software”), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+----
+README.md
+# git2gpt
+
+git2gpt is a command-line utility that converts a Git repository to text for loading into ChatGPT and other NLP models. The output text file represents the Git repository in a structured format. You can also add a `.gptignore` file to your repos to have git2gpt ignore certain files. The text is prefixed with a preamble that explains to the AI what the text is:
+
+> The following text is a Git repository with code. The structure of the text are sections that begin with ----, followed by a single line containing the file path and file name, followed by a variable amount of lines containing the file contents. The text representing the Git repository ends when the symbols --END-- are encounted. Any further text beyond --END-- are meant to be interpreted as instructions using the aforementioned Git repository as context.
+
+## Installation
+
+First, make sure you have the Go programming language installed on your system. You can download it from [the official Go website](https://golang.org/dl/).
+
+To install the `git2gpt` utility, run the following command:
+
+```bash
+go install github.com/chand1012/git2gpt@latest
+```
+
+This command will download and install the git2gpt binary to your `$GOPATH/bin` directory. Make sure your `$GOPATH/bin` is included in your `$PATH` to use the `git2gpt` command.
+
+## Usage
+
+To use the git2gpt utility, run the following command:
+
+```bash
+git2gpt [flags] /path/to/git/repository
+```
+
+### Ignoring Files
+
+By default, your `.git` directory and your `.gitignore` files are ignored. Any files in your `.gitignore` are also skipped. If you want to change this behavior, you should add a `.gptignore` file to your repository. The `.gptignore` file should contain a list of files and directories to ignore, one per line. The `.gptignore` file should be in the same directory as your `.gitignore` file. Please note that this overwrites the default ignore list, so you should include the default ignore list in your `.gptignore` file if you want to keep it.
+
+### Flags
+
+* `-p`,  `--preamble`: Path to a text file containing a preamble to include at the beginning of the output file.
+* `-o`,  `--output`: Path to the output file. If not specified, will print to standard output.
+* `-e`,  `--estimate`: Estimate the tokens of the output file. If not specified, does not estimate. 
+* `-j`,  `--json`: Output to JSON rather than plain text. Use with `-o` to specify the output file.
+* `-i`,  `--ignore`: Path to the `.gptignore` file. If not specified, will look for a `.gptignore` file in the same directory as the `.gitignore` file.
+* `-g`,  `--ignore-gitignore`: Ignore the `.gitignore` file.
+* `-s`,  `--scrub-comments`: Remove comments from the output file to save tokens.
+
+## Contributing
+
+Contributions are welcome! To contribute, please submit a pull request or open an issue on the GitHub repository.
+
+## License
+
+git2gpt is licensed under the MIT License. See the [LICENSE](LICENSE) file for more information.
+
+----
+cmd/root.go
+// cmd/root.go
+package cmd
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/chand1012/git2gpt/prompt"
+	"github.com/spf13/cobra"
+)
+
+var repoPath string
+var preambleFile string
+var outputFile string
+var estimateTokens bool
+var ignoreFilePath string
+var selectFilePath string
+var ignoreGitignore bool
+var outputJSON bool
+var debug bool
+var scrubComments bool
+
+var rootCmd = &cobra.Command{
+	Use:   "git2gpt [flags] /path/to/git/repository",
+	Short: "git2gpt is a utility to convert a Git repository to a text file for input into GPT-4",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		repoPath = args[0]
+		ignoreList := prompt.GenerateIgnoreList(repoPath, ignoreFilePath, !ignoreGitignore)
+		selectList := prompt.GenerateSelectList(repoPath, selectFilePath)
+		repo, err := prompt.ProcessGitRepo(repoPath, ignoreList, selectList)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			os.Exit(1)
+		}
+		if outputJSON {
+			output, err := prompt.MarshalRepo(repo, scrubComments)
+			if err != nil {
+				fmt.Printf("Error: %s\n", err)
+				os.Exit(1)
+			}
+			if outputFile != "" {
+				// if output file exists, throw error
+				if _, err := os.Stat(outputFile); err == nil {
+					fmt.Printf("Error: output file %s already exists\n", outputFile)
+					os.Exit(1)
+				}
+				err = os.WriteFile(outputFile, []byte(output), 0644)
+				if err != nil {
+					fmt.Printf("Error: could not write to output file %s\n", outputFile)
+					os.Exit(1)
+				}
+			} else {
+				if !debug {
+					fmt.Println(string(output))
+				}
+			}
+			return
+		}
+		output, err := prompt.OutputGitRepo(repo, preambleFile, scrubComments)
+		if err != nil {
+			fmt.Printf("Error: %s\n", err)
+			os.Exit(1)
+		}
+		if outputFile != "" {
+			// if output file exists, throw error
+			if _, err := os.Stat(outputFile); err == nil {
+				fmt.Printf("Error: output file %s already exists\n", outputFile)
+				os.Exit(1)
+			}
+			err = os.WriteFile(outputFile, []byte(output), 0644)
+			if err != nil {
+				fmt.Printf("Error: could not write to output file %s\n", outputFile)
+				os.Exit(1)
+			}
+		} else {
+			if !debug {
+				fmt.Println(output)
+			}
+		}
+		if estimateTokens {
+			fmt.Printf("Estimated number of tokens: %d\n", prompt.EstimateTokens(output))
+		}
+	},
+}
+
+func init() {
+	rootCmd.Flags().StringVarP(&preambleFile, "preamble", "p", "", "path to preamble text file")
+	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "path to output file")
+	rootCmd.Flags().BoolVarP(&estimateTokens, "estimate", "e", false, "estimate the number of tokens in the output")
+	rootCmd.Flags().StringVarP(&ignoreFilePath, "ignore", "i", "", "path to .gptignore file")
+	rootCmd.Flags().StringVarP(&selectFilePath, "select", "s", "", "path to .gptselect file")
+	rootCmd.Flags().BoolVarP(&ignoreGitignore, "ignore-gitignore", "g", false, "ignore .gitignore file")
+	rootCmd.Flags().BoolVarP(&outputJSON, "json", "j", false, "output JSON")
+	rootCmd.Flags().BoolVarP(&debug, "debug", "d", false, "debug mode. Do not output to standard output")
+	rootCmd.Flags().BoolVarP(&scrubComments, "scrub-comments", "c", false, "scrub comments from the output. Decreases token count")
+}
+
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+}
+
+----
+go.mod
+module github.com/chand1012/git2gpt
+
+go 1.20
+
+require (
+	github.com/gobwas/glob v0.2.3
+	github.com/spf13/cobra v1.6.1
+)
+
+require (
+	github.com/dlclark/regexp2 v1.10.0 // indirect
+	github.com/google/uuid v1.3.0 // indirect
+	github.com/inconshreveable/mousetrap v1.0.1 // indirect
+	github.com/pkoukk/tiktoken-go v0.1.6 // indirect
+	github.com/spf13/pflag v1.0.5 // indirect
+)
+
+----
+go.sum
+github.com/cpuguy83/go-md2man/v2 v2.0.2/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
+github.com/dlclark/regexp2 v1.10.0 h1:+/GIL799phkJqYW+3YbOd8LCcbHzT0Pbo8zl70MHsq0=
+github.com/dlclark/regexp2 v1.10.0/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
+github.com/gobwas/glob v0.2.3 h1:A4xDbljILXROh+kObIiy5kIaPYD8e96x1tgBhUI5J+Y=
+github.com/gobwas/glob v0.2.3/go.mod h1:d3Ez4x06l9bZtSvzIay5+Yzi0fmZzPgnTbPcKjJAkT8=
+github.com/google/uuid v1.3.0 h1:t6JiXgmwXMjEs8VusXIJk2BXHsn+wx8BZdTaoZ5fu7I=
+github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/inconshreveable/mousetrap v1.0.1 h1:U3uMjPSQEBMNp1lFxmllqCPM6P5u/Xq7Pgzkat/bFNc=
+github.com/inconshreveable/mousetrap v1.0.1/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
+github.com/pkoukk/tiktoken-go v0.1.6 h1:JF0TlJzhTbrI30wCvFuiw6FzP2+/bR+FIxUdgEAcUsw=
+github.com/pkoukk/tiktoken-go v0.1.6/go.mod h1:9NiV+i9mJKGj1rYOT+njbv+ZwA/zJxYdewGl6qVatpg=
+github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
+github.com/spf13/cobra v1.6.1 h1:o94oiPyS4KD1mPy2fmcYYHHfCxLqYjJOhGsCHFZtEzA=
+github.com/spf13/cobra v1.6.1/go.mod h1:IOw/AERYS7UzyrGinqmz6HLUo219MORXGxhbaJUqzrY=
+github.com/spf13/pflag v1.0.5 h1:iy+VFUOCP1a+8yFto/drg2CJ5u0yRoB7fZw3DKv/JXA=
+github.com/spf13/pflag v1.0.5/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+----
+main.go
+package main
+
+import (
+	"github.com/chand1012/git2gpt/cmd"
+)
+
+func main() {
+	cmd.Execute()
+}
+
+----
+prompt/prompt.go
+// prompt/prompt.go
+package prompt
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/chand1012/git2gpt/utils"
+	"github.com/gobwas/glob"
+	"github.com/pkoukk/tiktoken-go"
+)
+
+// GitFile is a file in a Git repository
+type GitFile struct {
+	Path     string `json:"path"`     // path to the file relative to the repository root
+	Tokens   int64  `json:"tokens"`   // number of tokens in the file
+	Contents string `json:"contents"` // contents of the file
+}
+
+// GitRepo is a Git repository
+type GitRepo struct {
+	TotalTokens int64     `json:"total_tokens"`
+	Files       []GitFile `json:"files"`
+	FileCount   int       `json:"file_count"`
+}
+
+// contains checks if a string is in a slice of strings
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
+
+func getIgnoreList(ignoreFilePath string) ([]string, error) {
+	var ignoreList []string
+	file, err := os.Open(ignoreFilePath)
+	if err != nil {
+		return ignoreList, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// if the line ends with a slash, add a globstar to the end
+		if strings.HasSuffix(line, "/") {
+			line = line + "**"
+		}
+		// remove all preceding slashes
+		line = strings.TrimPrefix(line, "/")
+		// line = filepath.FromSlash(line)
+		ignoreList = append(ignoreList, line)
+	}
+	return ignoreList, scanner.Err()
+}
+
+func getSelectList(selectFilePath string) ([]string, error) {
+	var selectList []string
+	file, err := os.Open(selectFilePath)
+	if err != nil {
+		return selectList, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// if the line ends with a slash, add a globstar to the end
+		if strings.HasSuffix(line, "/") {
+			line = line + "**"
+		}
+		// remove all preceding slashes
+		line = strings.TrimPrefix(line, "/")
+		selectList = append(selectList, line)
+	}
+	return selectList, scanner.Err()
+}
+
+func windowsToUnixPath(windowsPath string) string {
+	unixPath := strings.ReplaceAll(windowsPath, "\\", "/")
+	return unixPath
+}
+
+func shouldIgnore(filePath string, ignoreList []string) bool {
+	for _, pattern := range ignoreList {
+		g := glob.MustCompile(pattern, '/')
+		if g.Match(windowsToUnixPath(filePath)) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSelect(filePath string, selectList []string) bool {
+	if len(selectList) == 0 {
+		return true
+	}
+	for _, pattern := range selectList {
+		g := glob.MustCompile(pattern, '/')
+		if g.Match(windowsToUnixPath(filePath)) {
+			return true
+		}
+	}
+	return false
+}
+
+// GenerateIgnoreList generates a list of ignore patterns from the .gptignore file and the .gitignore file. Returns a slice of strings. Will return an empty slice if no ignore files exist.
+func GenerateIgnoreList(repoPath, ignoreFilePath string, useGitignore bool) []string {
+	if ignoreFilePath == "" {
+		ignoreFilePath = filepath.Join(repoPath, ".gptignore")
+	}
+
+	var ignoreList []string
+	if _, err := os.Stat(ignoreFilePath); err == nil {
+		// .gptignore file exists
+		ignoreList, _ = getIgnoreList(ignoreFilePath)
+	}
+	ignoreList = append(ignoreList, ".git/**", ".gitignore", ".gptignore", ".gptselect")
+
+	if useGitignore {
+		gitignorePath := filepath.Join(repoPath, ".gitignore")
+		if _, err := os.Stat(gitignorePath); err == nil {
+			// .gitignore file exists
+			gitignoreList, _ := getIgnoreList(gitignorePath)
+			ignoreList = append(ignoreList, gitignoreList...)
+		}
+	}
+
+	var finalIgnoreList []string
+	// loop through the ignore list and remove any duplicates
+	// also check if any pattern is a directory and add a globstar to the end
+	for _, pattern := range ignoreList {
+		if !contains(finalIgnoreList, pattern) {
+			// check if the pattern is a directory
+			info, err := os.Stat(filepath.Join(repoPath, pattern))
+			if err == nil && info.IsDir() {
+				pattern = filepath.Join(pattern, "**")
+			}
+			finalIgnoreList = append(finalIgnoreList, pattern)
+		}
+	}
+
+	return finalIgnoreList
+}
+
+// GenerateSelectList generates a list of select patterns from the .gptselect file. Returns a slice of strings. Will return an empty slice if no select file exists.
+func GenerateSelectList(repoPath, selectFilePath string) []string {
+	if selectFilePath == "" {
+		selectFilePath = filepath.Join(repoPath, ".gptselect")
+	}
+
+	var selectList []string
+	if _, err := os.Stat(selectFilePath); err == nil {
+		// .gptselect file exists
+		selectList, _ = getSelectList(selectFilePath)
+	}
+
+	var finalSelectList []string
+	// loop through the select list and remove any duplicates
+	// also check if any pattern is a directory and add a globstar to the end
+	for _, pattern := range selectList {
+		if !contains(finalSelectList, pattern) {
+			// check if the pattern is a directory
+			info, err := os.Stat(filepath.Join(repoPath, pattern))
+			if err == nil && info.IsDir() {
+				pattern = filepath.Join(pattern, "**")
+			}
+			finalSelectList = append(finalSelectList, pattern)
+		}
+	}
+
+	return finalSelectList
+}
+
+// ProcessGitRepo processes a Git repository and returns a GitRepo object
+func ProcessGitRepo(repoPath string, ignoreList []string, selectList []string) (*GitRepo, error) {
+	var repo GitRepo
+
+	err := processRepository(repoPath, ignoreList, selectList, &repo)
+	if err != nil {
+		return nil, fmt.Errorf("error processing repository: %w", err)
+	}
+
+	return &repo, nil
+}
+
+// OutputGitRepo outputs a Git repository to a text file
+func OutputGitRepo(repo *GitRepo, preambleFile string, scrubComments bool) (string, error) {
+	var repoBuilder strings.Builder
+
+	if preambleFile != "" {
+		preambleText, err := os.ReadFile(preambleFile)
+		if err != nil {
+			return "", fmt.Errorf("error reading preamble file: %w", err)
+		}
+		repoBuilder.WriteString(fmt.Sprintf("%s\n", string(preambleText)))
+	} else {
+		repoBuilder.WriteString("The following text is a Git repository with code. The structure of the text are sections that begin with ----, followed by a single line containing the file path and file name, followed by a variable amount of lines containing the file contents. The text representing the Git repository ends when the symbols --END-- are encounted. Any further text beyond --END-- are meant to be interpreted as instructions using the aforementioned Git repository as context.\n")
+	}
+
+	// write the files to the repoBuilder here
+	for _, file := range repo.Files {
+		repoBuilder.WriteString("----\n")
+		repoBuilder.WriteString(fmt.Sprintf("%s\n", file.Path))
+		if scrubComments {
+			file.Contents = utils.RemoveCodeComments(file.Contents)
+		}
+		repoBuilder.WriteString(fmt.Sprintf("%s\n", file.Contents))
+	}
+
+	repoBuilder.WriteString("--END--")
+
+	output := repoBuilder.String()
+
+	repo.TotalTokens = EstimateTokens(output)
+
+	return output, nil
+}
+
+func MarshalRepo(repo *GitRepo, scrubComments bool) ([]byte, error) {
+	// run the output function to get the total tokens
+	_, err := OutputGitRepo(repo, "", scrubComments)
+	if err != nil {
+		return nil, fmt.Errorf("error marshalling repo: %w", err)
+	}
+	return json.Marshal(repo)
+}
+
+func processRepository(repoPath string, ignoreList []string, selectList []string, repo *GitRepo) error {
+	err := filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			relativeFilePath, _ := filepath.Rel(repoPath, path)
+			ignore := shouldIgnore(relativeFilePath, ignoreList)
+			select := shouldSelect(relativeFilePath, selectList)
+			if !ignore && select {
+				contents, err := os.ReadFile(path)
+				// if the file is not valid UTF-8, skip it
+				if !utf8.Valid(contents) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				var file GitFile
+				file.Path = relativeFilePath
+				file.Contents = string(contents)
+				file.Tokens = EstimateTokens(file.Contents)
+				repo.Files = append(repo.Files, file)
+			}
+		}
+		return nil
+	})
+
+	repo.FileCount = len(repo.Files)
+
+	if err != nil {
+		return fmt.Errorf("error walking the path %q: %w", repoPath, err)
+	}
+
+	return nil
+}
+
+// EstimateTokens estimates the number of tokens in a string
+func EstimateTokens(output string) int64 {
+	tke, err := tiktoken.GetEncoding("cl100k_base")
+	if err != nil {
+		fmt.Println("Error getting encoding:", err)
+		return 0
+	}
+
+	tokens := tke.Encode(output, nil, nil)
+	return int64(len(tokens))
+}
+
+----
+scripts/build.sh
+#!/bin/bash
+
+# Set the name of the output binary and Go package
+BINARY_NAME="git2gpt"
+GO_PACKAGE="github.com/chand1012/git2gpt"
+
+# Build for M1 Mac (Apple Silicon)
+env GOOS=darwin GOARCH=arm64 go build -o "${BINARY_NAME}" "${GO_PACKAGE}"
+zip "${BINARY_NAME}_darwin_arm64.zip" "${BINARY_NAME}"
+rm "${BINARY_NAME}"
+
+# Build for AMD64 Mac (Intel)
+env GOOS=darwin GOARCH=amd64 go build -o "${BINARY_NAME}" "${GO_PACKAGE}"
+zip "${BINARY_NAME}_darwin_amd64.zip" "${BINARY_NAME}"
+rm "${BINARY_NAME}"
+
+# Build for AMD64 Windows
+env GOOS=windows GOARCH=amd64 go build -o "${BINARY_NAME}.exe" "${GO_PACKAGE}"
+zip "${BINARY_NAME}_windows_amd64.zip" "${BINARY_NAME}.exe"
+rm "${BINARY_NAME}.exe"
+
+# Build for AMD64 Linux
+env GOOS=linux GOARCH=amd64 go build -o "${BINARY_NAME}" "${GO_PACKAGE}"
+tar czvf "${BINARY_NAME}_linux_amd64.tar.gz" "${BINARY_NAME}"
+rm "${BINARY_NAME}"
+
+# Build for ARM64 Linux
+env GOOS=linux GOARCH=arm64 go build -o "${BINARY_NAME}" "${GO_PACKAGE}"
+tar czvf "${BINARY_NAME}_linux_arm64.tar.gz" "${BINARY_NAME}"
+rm "${BINARY_NAME}"
+
+----
+utils/strings.go
+package utils
+
+import (
+	"bufio"
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+// RemoveCodeComments removes single-line and multiline comments from the provided code string.
+func RemoveCodeComments(code string) string {
+	// Regex for single-line comments.
+	singleLineCommentRegex := regexp.MustCompile(`^\s*(//|#|--|<!--|%|;|REM\s).*$`)
+
+	// Regex for multiline comments in C, JavaScript, Go, and HTML.
+	multiLineCommentRegex := regexp.MustCompile(`(?s)/\*.*?\*/|<!--.*?-->`)
+ 
+	// Use a scanner to process each line of the input string.
+	var result strings.Builder
+	scanner := bufio.NewScanner(strings.NewReader(code))
+	for scanner.Scan() {
+		line := scanner.Text()
+		// First remove multiline comments as they may span across multiple lines.
+		line = multiLineCommentRegex.ReplaceAllString(line, "")
+		// Then remove any single-line comment parts that remain.
+		cleanLine := singleLineCommentRegex.ReplaceAllString(line, "")
+		if cleanLine != "" {
+			// Write the cleaned line to the result, preserving original line breaks.
+			result.WriteString(cleanLine + "\n")
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(&result, "Error reading input:", err)
+	}
+
+	// Additional cleanup in case of multiline comments spanning across multiple scanned lines.
+	finalCleanedCode := multiLineCommentRegex.ReplaceAllString(result.String(), "")
+
+	return strings.TrimRight(finalCleanedCode, "\n")
+}
+
+--END--

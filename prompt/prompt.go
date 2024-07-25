@@ -1,3 +1,4 @@
+// prompt/prompt.go
 package prompt
 
 import (
@@ -64,6 +65,31 @@ func getIgnoreList(ignoreFilePath string) ([]string, error) {
 	return ignoreList, scanner.Err()
 }
 
+func getSelectList(selectFilePath string) ([]string, error) {
+	var selectList []string
+	file, err := os.Open(selectFilePath)
+	if err != nil {
+		return selectList, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// if the line ends with a slash, add a globstar to the end
+		if strings.HasSuffix(line, "/") {
+			line = line + "**"
+		}
+		// remove all preceding slashes
+		line = strings.TrimPrefix(line, "/")
+		selectList = append(selectList, line)
+	}
+	return selectList, scanner.Err()
+}
+
 func windowsToUnixPath(windowsPath string) string {
 	unixPath := strings.ReplaceAll(windowsPath, "\\", "/")
 	return unixPath
@@ -71,6 +97,19 @@ func windowsToUnixPath(windowsPath string) string {
 
 func shouldIgnore(filePath string, ignoreList []string) bool {
 	for _, pattern := range ignoreList {
+		g := glob.MustCompile(pattern, '/')
+		if g.Match(windowsToUnixPath(filePath)) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSelect(filePath string, selectList []string) bool {
+	if len(selectList) == 0 {
+		return true
+	}
+	for _, pattern := range selectList {
 		g := glob.MustCompile(pattern, '/')
 		if g.Match(windowsToUnixPath(filePath)) {
 			return true
@@ -90,7 +129,7 @@ func GenerateIgnoreList(repoPath, ignoreFilePath string, useGitignore bool) []st
 		// .gptignore file exists
 		ignoreList, _ = getIgnoreList(ignoreFilePath)
 	}
-	ignoreList = append(ignoreList, ".git/**", ".gitignore", ".gptignore")
+	ignoreList = append(ignoreList, ".git/**", ".gitignore", ".gptignore", ".gptselect")
 
 	if useGitignore {
 		gitignorePath := filepath.Join(repoPath, ".gitignore")
@@ -118,12 +157,40 @@ func GenerateIgnoreList(repoPath, ignoreFilePath string, useGitignore bool) []st
 	return finalIgnoreList
 }
 
-// ProcessGitRepo processes a Git repository and returns a GitRepo object
-func ProcessGitRepo(repoPath string, ignoreList []string) (*GitRepo, error) {
+// GenerateSelectList generates a list of select patterns from the .gptselect file. Returns a slice of strings. Will return an empty slice if no select file exists.
+func GenerateSelectList(repoPath, selectFilePath string) []string {
+	if selectFilePath == "" {
+		selectFilePath = filepath.Join(repoPath, ".gptselect")
+	}
 
+	var selectList []string
+	if _, err := os.Stat(selectFilePath); err == nil {
+		// .gptselect file exists
+		selectList, _ = getSelectList(selectFilePath)
+	}
+
+	var finalSelectList []string
+	// loop through the select list and remove any duplicates
+	// also check if any pattern is a directory and add a globstar to the end
+	for _, pattern := range selectList {
+		if !contains(finalSelectList, pattern) {
+			// check if the pattern is a directory
+			info, err := os.Stat(filepath.Join(repoPath, pattern))
+			if err == nil && info.IsDir() {
+				pattern = filepath.Join(pattern, "**")
+			}
+			finalSelectList = append(finalSelectList, pattern)
+		}
+	}
+
+	return finalSelectList
+}
+
+// ProcessGitRepo processes a Git repository and returns a GitRepo object
+func ProcessGitRepo(repoPath string, ignoreList []string, selectList []string) (*GitRepo, error) {
 	var repo GitRepo
 
-	err := processRepository(repoPath, ignoreList, &repo)
+	err := processRepository(repoPath, ignoreList, selectList, &repo)
 	if err != nil {
 		return nil, fmt.Errorf("error processing repository: %w", err)
 	}
@@ -173,42 +240,43 @@ func MarshalRepo(repo *GitRepo, scrubComments bool) ([]byte, error) {
 	return json.Marshal(repo)
 }
 
-func processRepository(repoPath string, ignoreList []string, repo *GitRepo) error {
-	err := filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			relativeFilePath, _ := filepath.Rel(repoPath, path)
-			ignore := shouldIgnore(relativeFilePath, ignoreList)
-			// fmt.Println(relativeFilePath, ignore)
-			if !ignore {
-				contents, err := os.ReadFile(path)
-				// if the file is not valid UTF-8, skip it
-				if !utf8.Valid(contents) {
-					return nil
-				}
-				if err != nil {
-					return err
-				}
-				var file GitFile
-				file.Path = relativeFilePath
-				file.Contents = string(contents)
-				file.Tokens = EstimateTokens(file.Contents)
-				repo.Files = append(repo.Files, file)
-			}
-		}
-		return nil
-	})
+func processRepository(repoPath string, ignoreList []string, selectList []string, repo *GitRepo) error {
+    err := filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        if !info.IsDir() {
+            relativeFilePath, _ := filepath.Rel(repoPath, path)
+            ignore := shouldIgnore(relativeFilePath, ignoreList)
+            isSelected := shouldSelect(relativeFilePath, selectList)
+            if !ignore && isSelected {
+                contents, err := os.ReadFile(path)
+                // if the file is not valid UTF-8, skip it
+                if !utf8.Valid(contents) {
+                    return nil
+                }
+                if err != nil {
+                    return err
+                }
+                var file GitFile
+                file.Path = relativeFilePath
+                file.Contents = string(contents)
+                file.Tokens = EstimateTokens(file.Contents)
+                repo.Files = append(repo.Files, file)
+            }
+        }
+        return nil
+    })
 
-	repo.FileCount = len(repo.Files)
+    repo.FileCount = len(repo.Files)
 
-	if err != nil {
-		return fmt.Errorf("error walking the path %q: %w", repoPath, err)
-	}
+    if err != nil {
+        return fmt.Errorf("error walking the path %q: %w", repoPath, err)
+    }
 
-	return nil
+    return nil
 }
+
 
 // EstimateTokens estimates the number of tokens in a string
 func EstimateTokens(output string) int64 {
